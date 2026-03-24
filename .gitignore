@@ -205,3 +205,36 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# macOS
+.DS_Store
+
+# Jupyter / editors
+**/.virtual_documents/
+.ipynb_checkpoints/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# virtual envs
+.venv/
+venv/
+pyvenv/
+env/
+
+# packaging / build
+build/
+dist/
+*.egg-info/
+
+# test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# LSP / editor
+.mypy_cache/
+.ruff_cache/
+.pyright/
