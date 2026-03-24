@@ -1,0 +1,272 @@
+import numpy as np
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
+from matplotlib.colors import Normalize, LogNorm
+from typing import Optional, Tuple
+
+def plot(
+    spots: pd.DataFrame,
+    edges: pd.DataFrame,
+    conversion_factors: Tuple[float] = (3000.,0.0508, 0.024901960784313726 ),
+    fig: Optional[plt.Figure] = None,
+    ax: Optional[plt.Axes] = None,
+    img: np.ndarray = None,
+    img_id: int = 0,
+    draw_mean_hline: bool = False,
+    figsize: tuple[int, int] = (7, 6),
+    legend: bool = True,
+    line_tracks_kwargs: dict = {"lw": 0.9, "alpha": 0.9},
+    scatter_spots_kwargs: dict = {"alpha": 0.8, "s": 0.7, "marker": ","},
+
+    tracks:Optional[ list[int] ]=[],
+
+    xlim:Optional[ list[int] ]=[],
+    ylim:Optional[ list[int] ]=[],
+
+
+    # speed coloring (lines)
+    color_by_speed: bool = True,
+    cmap: str = "brg",
+    logscale: bool = False,
+    speed_clip_percent: tuple[int, int] = (1, 99),
+    equal_axes: bool = True,
+    invert_y: bool = False,
+    colorbar: bool = True,
+    speed_units: str = "m/s",
+    ax_units: str = "mm",
+
+    # quiver (arrow) overlay options
+    arrows: bool = True,
+    arrows_every: int = 4,
+    arrows_scale_units: str = "xy",
+    arrows_scale: float = 0.5,     # larger -> shorter arrows
+    arrows_width: float = 0.004,
+    arrows_headwidth: float = 4.0,
+    arrows_headlength: float = 5.0,
+    arrows_headaxislength: float = 3.5,
+    arrows_per_track_norm: bool = False,
+    arrows_clip_percent: tuple[int, int] = (5, 95),
+    arrows_colorbar: bool = False,
+) -> Tuple[plt.Figure, plt.Axes]:
+
+
+    if len( tracks)>0: 
+        edges = edges[edges.TRACK_ID.isin(tracks)]
+
+    if fig is None or ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+
+    if img is not None:
+        _, x_um_per_px, y_um_per_px = conversion_factors
+        ny, nx = img.shape[:2]
+
+        # show image with physical coordinates
+#         ax.imshow(
+            # img,
+            # cmap="grey_r",
+            # origin="upper",  # image-style y downward; change to 'lower' if you prefer Cartesian
+            # extent=[0, nx * x_um_per_px, 0,  ny * y_um_per_px],  # x_left, x_right, y_bottom, y_top
+            # zorder=0,
+    # )
+        im = ax.imshow(
+    img, origin="lower",
+    extent=[0, 1, 0, 1],
+    transform=ax.transAxes,             # <- decouple from data
+    zorder=0
+)
+
+#     # Spots
+    # g = spots.sort_values("t").groupby("TRACK_ID", sort=False)
+
+    # idx = g["t"].idxmin()
+    # out = spots.loc[idx, ["TRACK_ID", "x", "y", "t"]].reset_index(drop=True)
+    # out = out[out.TRACK_ID.isin(tracks)]
+    # ax.scatter(
+        # out["x"].to_numpy(),
+        # out["y"].to_numpy(),
+        # rasterized=True,
+        # **scatter_spots_kwargs,
+    # )
+
+    # ---------- Build segments + speeds (prefers vx,vy if present) ----------
+    all_segs = []
+    all_speed = []
+    per_track_data = []  # each: {"mid": (M,2), "vec": (M,2), "speed": (M,)}
+
+    has_time = "t" in edges.columns
+    has_vel  = {"vx", "vy"}.issubset(edges.columns)
+
+    # Ensure time order if t exists
+    if has_time:
+        edges = edges.sort_values(["TRACK_ID", "t"])
+
+    for _, g in edges.groupby("TRACK_ID", sort=False):
+        cols = ["x", "y"] + (["t"] if has_time else [])
+        arr  = g[cols].to_numpy(dtype=float)
+        xy   = arr[:, :2]
+        if xy.shape[0] < 2:
+            continue
+
+        segs = np.stack([xy[:-1], xy[1:]], axis=1)     # (N-1, 2, 2)
+        mids = 0.5 * (segs[:, 0, :] + segs[:, 1, :])   # (N-1, 2)
+
+        if has_vel:
+            vxy = g[["vx", "vy"]].to_numpy(dtype=float) / 1e3 # m/s
+
+            sp        = np.hypot(vxy[:, 0], vxy[:, 1])      # (N,)
+            seg_speed = 0.5 * (sp[:-1] + sp[1:])            # (N-1,)
+            dvec      = 0.5 * (vxy[:-1, :] + vxy[1:, :])    # (N-1, 2)
+
+            valid = np.isfinite(seg_speed) & np.all(np.isfinite(dvec), axis=1)
+
+            segs_v  = segs[valid]
+            mids_v  = mids[valid]
+            speed_v = seg_speed[valid]
+            vec_v   = dvec[valid]
+
+        else:
+            dxy  = np.diff(xy, axis=0)                      # (N-1, 2)
+            step = np.hypot(dxy[:, 0], dxy[:, 1])           # (N-1,)
+            if has_time:
+                t   = arr[:, 2]
+                dt  = np.diff(t)                            # (N-1,)
+            else:
+                dt  = np.ones_like(step)
+
+            speed = step / dt                                # (N-1,)
+            vec   = dxy / dt[:, None] if has_time else dxy   # (N-1, 2)
+
+            valid = np.isfinite(speed) & np.all(np.isfinite(vec), axis=1)
+
+            segs_v  = segs[valid]
+            mids_v  = mids[valid]
+            speed_v = speed[valid]
+            vec_v   = vec[valid]
+
+        if speed_v.size == 0:
+            continue
+
+        all_segs.append(segs_v)
+        all_speed.append(speed_v)
+        per_track_data.append({"mid": mids_v, "vec": vec_v, "speed": speed_v})
+
+    # Fallback: draw plain polylines if no valid segments
+    if not all_segs:
+        segs_plain = []
+        for _, g in edges.groupby("TRACK_ID", sort=False):
+            xy = g[["x", "y"]].to_numpy()
+            if xy.shape[0] >= 2:
+                segs_plain.append(xy)
+        if segs_plain:
+            lc_plain = LineCollection(segs_plain, **line_tracks_kwargs)
+            lc_plain.set_rasterized(True)
+            ax.add_collection(lc_plain)
+        _finalize_axes(ax, legend, draw_mean_hline, spots, equal_axes, invert_y, ax_units)
+        return (fig, ax)
+
+    segs_concat  = np.concatenate(all_segs, axis=0)   # (M, 2, 2)
+    speed_concat = np.concatenate(all_speed, axis=0)  # (M,)
+
+    # ---------- Lines: color by speed (global norm) ----------
+    if color_by_speed:
+        lo, hi = np.percentile(speed_concat, speed_clip_percent)
+        lo = max(lo, np.finfo(float).tiny)
+        if hi <= lo:
+            hi = lo * 1.0001
+        norm = LogNorm(vmin=lo, vmax=hi) if logscale else Normalize(vmin=lo, vmax=hi)
+    else:
+        norm = None
+
+    lc = LineCollection(
+        segs_concat,
+        cmap=cmap if color_by_speed else None,
+        norm=norm if color_by_speed else None,
+        **line_tracks_kwargs,
+    )
+    if color_by_speed:
+        lc.set_array(speed_concat)
+    lc.set_rasterized(True)
+    ax.add_collection(lc)
+
+    # ---------- Optional: quiver arrows ----------
+    if arrows and per_track_data:
+        if arrows_per_track_norm:
+            for td in per_track_data:
+                mid = td["mid"]; vec = td["vec"]; spd = td["speed"]
+                if mid.shape[0] == 0:
+                    continue
+                if arrows_every > 1:
+                    idx = np.arange(mid.shape[0])[::arrows_every]
+                    mid, vec, spd = mid[idx], vec[idx], spd[idx]
+                lo_t, hi_t = np.percentile(spd, arrows_clip_percent)
+                lo_t = max(lo_t, np.finfo(float).tiny)
+                if hi_t <= lo_t:
+                    hi_t = lo_t * 1.0001
+                norm_t = LogNorm(vmin=lo_t, vmax=hi_t) if logscale else Normalize(vmin=lo_t, vmax=hi_t)
+                ax.quiver(
+                    mid[:, 0], mid[:, 1], vec[:, 0], vec[:, 1],
+                    spd, cmap=cmap, norm=norm_t,
+                    angles="xy", scale_units=arrows_scale_units, scale=arrows_scale,
+                    width=arrows_width, headwidth=arrows_headwidth,
+                    headlength=arrows_headlength, headaxislength=arrows_headaxislength,
+                    zorder=3,
+                )
+        else:
+            mids = np.concatenate([td["mid"] for td in per_track_data], axis=0)
+            vecs = np.concatenate([td["vec"] for td in per_track_data], axis=0)
+            spds = np.concatenate([td["speed"] for td in per_track_data], axis=0)
+            if arrows_every > 1:
+                idx = np.arange(mids.shape[0])[::arrows_every]
+                mids, vecs, spds = mids[idx], vecs[idx], spds[idx]
+            norm_a = norm
+            if norm_a is None:
+                lo, hi = np.percentile(spds, arrows_clip_percent)
+                lo = max(lo, np.finfo(float).tiny)
+                if hi <= lo:
+                    hi = lo * 1.0001
+                norm_a = LogNorm(vmin=lo, vmax=hi) if logscale else Normalize(vmin=lo, vmax=hi)
+            q = ax.quiver(
+                mids[:, 0], mids[:, 1], vecs[:, 0], vecs[:, 1],
+                spds, cmap=cmap, norm=norm_a,
+                angles="xy", scale_units=arrows_scale_units, scale=arrows_scale,
+                width=arrows_width, headwidth=arrows_headwidth,
+                headlength=arrows_headlength, headaxislength=arrows_headaxislength,
+                zorder=3,
+            )
+
+
+    # ---------- Cosmetics ----------
+    if draw_mean_hline:
+        ax.axhline(
+            np.median(spots["y"]),
+            label="y-Median of tracks",
+            alpha=0.6,
+            color="tab:orange",
+        )
+
+    _finalize_axes(ax, legend, draw_mean_hline, spots, equal_axes, invert_y, ax_units)
+
+
+
+
+    if color_by_speed and colorbar:
+
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        cbar = plt.colorbar(lc, ax=ax, fraction=0.03, pad=0.01, cax=cax )
+        cbar.set_label(f"Speed ({speed_units})",)
+
+    return (fig, ax)
+
+def _finalize_axes(ax, legend, draw_mean_hline, spots, equal_axes, invert_y,ax_units):
+    # ax.autoscale()
+    # if equal_axes:
+        # ax.set_aspect("equal", adjustable="box")
+
+    ax.set_xlabel(rf"x ({ax_units})")
+    ax.set_ylabel(rf"y ({ax_units})")
+    if legend and draw_mean_hline:
+        ax.legend(loc="upper right", handlelength=0.3)
+
