@@ -9,6 +9,18 @@ Utilities for running **automated TrackMate analysis in Fiji** and post-processi
   - `run_automated_trackmate.py`: Python launcher that batches frame ranges and invokes Fiji.
 - `track_mate_visualisation/`
   - Python package for loading, filtering, and plotting TrackMate trajectory data.
+ 
+## Fiji/Trackmate
+Fiji can be downloaded here: https://imagej.net/software/fiji/downloads 
+Trackmate needs to be installed as extra plugin (https://imagej.net/plugins/trackmate/)
+Fiji/trackmate workflow:
+- Import image sequence (tifs) into fiji
+- start trackmate plugin
+- select spot detection algorithm
+- test different spot sizes/prominences/quality factors (in my case DogDetector worked best)
+- test different linking algorithms (depend on the motion which is observed. With the parabolic dust i think the kalman linker is best suited)
+- use the ideal algorithm settings for the automated version that automatically imports sequences of images and does the full Trackmate analysis 
+
 
 ## Automated TrackMate workflow
 
