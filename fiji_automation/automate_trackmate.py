@@ -24,7 +24,6 @@ from fiji.plugin.trackmate.tracking.jaqaman import LAPUtils
 from fiji.plugin.trackmate.io import CSVExporter
 from fiji.plugin.trackmate.visualization.table import TrackTableView
 from fiji.plugin.trackmate.gui.displaysettings import DisplaySettingsIO
-from fiji.plugin.trackmate.visualization.table import TrackTableView
 
 
 def write_run_log(outDir, seqDir, start, end, imp, settings, model):
@@ -191,14 +190,21 @@ def open_sequence_range_as_T(dirpath, start_tok, end_tok):
         ],
         key=lambda f: int(rx.match(f).group(1)),
     )
+    if not files:
+        raise IOError("No frames found in %s for range %s..%s" % (dirpath, start_tok, end_tok))
+
     op = Opener()
     imp0 = op.openImage(os.path.join(dirpath, files[0]))
+    if imp0 is None:
+        raise IOError("Failed to open first frame: %s" % files[0])
     w, h = imp0.getWidth(), imp0.getHeight()
     stack = ImageStack(w, h)
     stack.addSlice(imp0.getProcessor())
     imp0.close()
     for f in files[1:]:
         imp = op.openImage(os.path.join(dirpath, f))
+        if imp is None:
+            raise IOError("Failed to open frame: %s" % f)
         stack.addSlice(imp.getProcessor())
         imp.close()
     imp = ImagePlus("range_%d_%d" % (start_tok, end_tok), stack)
