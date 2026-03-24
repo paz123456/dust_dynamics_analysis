@@ -50,15 +50,18 @@ def combine_csv(
     paths_spots: list[str],
     batch_size: int = 2000,
 ) -> Tuple[pd.DataFrame]:
-    """Combine splitted datasets."""
-    # add time offset of batch, such that t is absolute time of trajectory
-    # compared to video start
+    """Combine split TrackMate CSV exports into continuous edge/spot tables.
+
+    Each file is treated as a batch and receives:
+    - a time offset of `batch_index * batch_size`
+    - a cumulative TRACK_ID offset so IDs are unique globally
+    """
 
     skiprows = 3
 
     batch_edges = []
     next_id_offset = 0
-    # Combine edges (offset IDs cumulatively)
+    # Combine edges with cumulative TRACK_ID offsets.
     for i, p in enumerate(paths_edges):
         _ = _read_edges(p, skiprows=skiprows)
         _["TRACK_ID"] = _["TRACK_ID"] + next_id_offset
@@ -69,7 +72,7 @@ def combine_csv(
 
     batch_spots = []
     next_id_offset = 0
-    # Combine edges (offset IDs cumulatively)
+    # Combine spots with cumulative TRACK_ID offsets.
     for i, p in enumerate(paths_spots):
         _ = _read_spots(p, skiprows=skiprows)
         _["TRACK_ID"] = _["TRACK_ID"] + next_id_offset
@@ -122,23 +125,32 @@ def filter_df(
     flip_y_to_cartesian: bool = True,
     image_shape: Optional[Tuple[int, int]] = (720, 1280),  # (ny, nx) in pixels
 ):
+    """Convert, filter, and optionally smooth trajectories.
+
+    The pipeline is:
+    1) optional image-coordinate to Cartesian flip on y
+    2) unit conversion (px/frame -> physical units)
+    3) coarse per-track filtering on simple summary statistics
+    4) geometric/path filtering using `analysis.path_analytics`
+    5) optional per-axis / per-track smoothing
+    """
 
     # unpack conversion
     fps, sx, sy = conversion_factors
 
-    # --- 0) optional flip to Cartesian (on pixel coords), then convert to physical units
+    # Copy before mutation.
     edges_phys = df_edges.copy()
     spots_phys = df_spots.copy()
 
+    # 1) Optional pixel-space y-flip before converting to physical units.
+    if flip_y_to_cartesian:
+        if image_shape is None:
+            raise ValueError("image_shape is required when flip_y_to_cartesian=True.")
+        ny, _ = image_shape  # pixels
+        edges_phys["y"] = (ny - 1) - edges_phys["y"]
+        spots_phys["y"] = (ny - 1) - spots_phys["y"]
 
-
-    ny, nx = image_shape  # pixels
-
-
-    edges_phys["y"] = (ny - 1) - edges_phys["y"]
-    spots_phys["y"]  = (ny - 1) - spots_phys["y"]
-
-    # now convert to PHYSICAL units
+    # 2) Convert position/time to physical units.
     edges_phys["t"] /= fps
     spots_phys["t"] /= fps
     edges_phys["x"] *= sx
@@ -146,19 +158,23 @@ def filter_df(
     spots_phys["x"] *= sx
     spots_phys["y"] *= sy
 
-
+    # Keep the converted-but-unsmoothed trajectory around for plotting/debugging.
     edges_phys["x_raw"] = edges_phys.x
-    edges_phys["y_raw" ] = edges_phys.y
+    edges_phys["y_raw"] = edges_phys.y
 
-# If v/a exist in df_edges, convert them here so they track the same index
+    # If velocity/acceleration columns exist, convert them into physical units too.
     for comp, scale in (("x", sx), ("y", sy)):
         vcol, acol = f"v{comp}", f"a{comp}"
         if vcol in edges_phys.columns:
-            print("True")
-            edges_phys[vcol] = df_edges.loc[edges_phys.index, vcol].to_numpy() * scale * fps
+            edges_phys[vcol] = (
+                df_edges.loc[edges_phys.index, vcol].to_numpy() * scale * fps
+            )
         if acol in edges_phys.columns:
-            edges_phys[acol] = df_edges.loc[edges_phys.index, acol].to_numpy() * scale * (fps**2)
-    # --- 2) compute filtering stats in PHYSICAL units (mm, s)
+            edges_phys[acol] = (
+                df_edges.loc[edges_phys.index, acol].to_numpy() * scale * (fps**2)
+            )
+
+    # 3) Compute coarse filtering stats in physical units.
     if min_y == "median":
         min_y = float(np.median(edges_phys["y"]))
 
@@ -200,10 +216,11 @@ def filter_df(
 
     edges_phys_red = edges_phys_red[edges_phys_red["TRACK_ID"].isin(pa.index)]
 
-    edges_phys_red = edges_phys_red[edges_phys_red["TRACK_ID"].isin(pa.index)]
-
-# --- apply smoothing ONLY on the final trajectories ---
-
+    # 4) Apply smoothing only to tracks that passed all filters.
+    if apply_filter is not None:
+        edges_phys_red = edges_phys_red.groupby("TRACK_ID", group_keys=False).apply(
+            _apply_per_track, fn=apply_filter, include_groups=False
+        )
 
     if apply_track_filter is not None:
         edges_phys_red = edges_phys_red.groupby("TRACK_ID", group_keys=False).apply(
